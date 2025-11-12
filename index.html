@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<title>Gate Crash — Pass & Play (v2.1 — ring labels rotated)</title>
+<style>
+:root{
+  --bg:#0b0f14;--panel:#0e141d;--ui:#121821;--ink:#e6eefb;
+  --edge:#93a2b6;--ring:#b4c4d8;--p1:#f05c5c;--p2:#7aa2ff;--crash:#ff8c8c;--tile:#0f1621;
+  --ok:#7ee787;--warn:#ffdd57;--danger:#ff8c8c;--muted:#9aa4b2;
+}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+.wrap{display:grid;grid-template-rows:auto auto 1fr;gap:10px;padding:10px;max-width:1100px;margin:0 auto}
+.header{display:flex;gap:8px;align-items:center;justify-content:space-between}
+.header .title{font-weight:800}
+.badge{padding:4px 8px;border:1px solid #243043;border-radius:8px;background:#0f1621}
+.board{background:var(--panel);border-radius:12px;min-height:54vh;display:flex;align-items:center;justify-content:center;position:relative}
+svg{width:100%;height:100%;max-height:80vh;touch-action:manipulation;user-select:none}
+.controls{background:var(--panel);border-radius:12px;padding:10px;display:grid;gap:10px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button{background:var(--ui);color:var(--ink);border:1px solid #2a3340;border-radius:8px;padding:8px 12px}
+button.primary{background:var(--p2);color:#001020;border-color:transparent;font-weight:700}
+button.good{background:var(--ok);color:#001010;border-color:transparent;font-weight:700}
+button.warn{background:var(--warn);color:#221a00;border-color:transparent;font-weight:700}
+select,input,textarea{background:#0f1621;color:var(--ink);border:1px solid #273342;border-radius:8px;padding:6px 8px}
+textarea{width:100%;min-height:100px}
+fieldset{border:1px solid #223044;border-radius:10px;padding:10px}
+legend{color:var(--muted);padding:0 6px}
+.small{font-size:12px;color:var(--muted)}
+.hidden{display:none}
+label{display:inline-flex;gap:6px;align-items:center}
+.kbd{font-family:ui-monospace,Menlo,Consolas,monospace;background:#0f1621;border:1px solid #2a3340;border-radius:6px;padding:2px 6px;color:#c7d2e4}
+.toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#0f1621;border:1px solid #2b3649;border-radius:10px;padding:8px 12px;color:var(--ink);box-shadow:0 6px 18px rgba(0,0,0,.35);max-width:90vw}
+.spacer{flex:1}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <div class="title">Gate Crash — <span id="phaseLabel">Allocation</span> <span class="small">(Turn <span id="turnNo">1</span>)</span></div>
+    <div class="row">
+      <span class="badge">Pass &amp; Play</span>
+      <span class="badge">Win: last player controlling a planet</span>
+      <span class="spacer"></span>
+      <button id="saveBtn">Save</button>
+      <button id="loadBtn">Load</button>
+    </div>
+  </div>
+
+  <div class="board">
+    <svg id="board" viewBox="-18 -18 36 36" preserveAspectRatio="xMidYMid meet" aria-label="Board"></svg>
+  </div>
+
+  <div class="controls" id="controls">
+    <fieldset id="allocPanel">
+      <legend>1) Resource Allocation</legend>
+      <div class="row small">+1 per controlled planet (B–G only; A never yields resources) • +1 per ring gate where you control both endpoints (choose endpoint)</div>
+      <div id="allocGates"></div>
+      <div class="row">
+        <button class="primary" id="allocApply">Apply Allocation</button>
+      </div>
+    </fieldset>
+
+    <fieldset id="planPanel" class="hidden">
+      <legend>2) Movement Planning (pass device)</legend>
+      <div class="row">
+        <span class="badge">Current: <span id="currentPlayerBadge">P1 (Red)</span></span>
+        <span class="small">You only see your own orders. Board counters preview your planned departures/arrivals.</span>
+      </div>
+      <div class="row">
+        <label>From <select id="fromTile"></select></label>
+        <label>To <select id="toTile"></select></label>
+      </div>
+      <div class="row">
+        <label>Ships <input id="qtyShips" type="number" value="0" min="0" style="width:70px"></label>
+        <label>Res <input id="qtyRes" type="number" value="0" min="0" style="width:70px"></label>
+        <button id="addOrder">Add</button>
+        <button id="clearOrders">Clear</button>
+      </div>
+      <div class="row small">Adjacent tiles only. Only the owner may move resources from a tile. You can’t plan more than you have (minus your own already‑planned moves).</div>
+      <fieldset>
+        <legend>Your planned moves</legend>
+        <div id="myOrders" class="small">(none)</div>
+      </fieldset>
+      <div class="row">
+        <button class="primary" id="donePlanner">Done — pass to next player</button>
+      </div>
+    </fieldset>
+
+    <fieldset id="revealPanel" class="hidden">
+      <legend>3) Reveal &amp; Conflict Preview</legend>
+      <div class="row small">Both players’ plans are now visible. Below: upcoming head‑on gate clashes and contested tiles.</div>
+      <fieldset>
+        <legend>Planned Orders</legend>
+        <div class="small"><b>P1:</b> <span id="ordersP1">(none)</span></div>
+        <div class="small"><b>P2:</b> <span id="ordersP2">(none)</span></div>
+      </fieldset>
+      <fieldset>
+        <legend>Upcoming Battles</legend>
+        <div id="conflictPreview" class="small">(none)</div>
+      </fieldset>
+      <div class="row">
+        <button class="primary" id="resolveBtn">Resolve Movement &amp; Combat</button>
+      </div>
+    </fieldset>
+
+    <fieldset id="combatPanel" class="hidden">
+      <legend>Combat Log</legend>
+      <div id="combatLog" class="small" style="white-space:pre-wrap;max-height:240px;overflow:auto;"></div>
+      <div class="row">
+        <button id="continueToBuild" class="primary">Continue to Construction</button>
+      </div>
+    </fieldset>
+
+    <fieldset id="buildPanel" class="hidden">
+      <legend>4) Construction (3 resources → 1 ship on same tile) — A cannot build</legend>
+      <div id="buildRows" class="row"></div>
+      <div class="row">
+        <button class="primary" id="endTurn">End Turn</button>
+      </div>
+    </fieldset>
+
+    <div id="victoryPanel" class="hidden">
+      <hr/>
+      <div class="row"><span class="kbd" id="victoryText">Winner TBD</span></div>
+      <div class="row">
+        <button class="good" id="newGame">New Game</button>
+      </div>
+    </div>
+
+    <fieldset id="saveLoadPanel" class="hidden">
+      <legend>Save / Load JSON</legend>
+      <div class="row">
+        <button id="copySave">Copy to Clipboard</button>
+        <button id="pasteLoad">Load from Textarea</button>
+      </div>
+      <textarea id="saveText" placeholder="Paste a saved state JSON here to load..."></textarea>
+      <div class="small">Tip: the app also uses localStorage under the key <span class="kbd">gatecrash_v2</span>.</div>
+    </fieldset>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script>
+// ====== Geometry & Rendering ======
+const S = 4.8, SQRT3=Math.sqrt(3);
+const AX={A:[0,0],B:[0,-1],C:[1,-1],D:[1,0],E:[0,1],F:[-1,1],G:[-1,0]};
+const DIRS=[[1,0],[1,-1],[0,-1],[-1,0],[ -1,1],[0,1]];
+const RING_ORDER=['B','C','D','E','F','G'];
+const EDGES_RING=[['B','C'],['C','D'],['D','E'],['E','F'],['F','G'],['G','B']];
+const EDGES_SPOKES=[['A','B'],['A','C'],['A','D'],['A','E'],['A','F'],['A','G']];
+const EDGES=[...EDGES_RING, ...EDGES_SPOKES], eKey=(u,v)=>[u,v].sort().join('-');
+const Cc={edge:'#93a2b6',ring:'#b4c4d8',p1:'#f05c5c',p2:'#7aa2ff',crash:'#ff8c8c',tile:'#0f1621',ink:'#e6eefb'};
+const svg=document.getElementById('board');
+function make(tag,attrs={},parent){const p=parent||svg;const n=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const[k,v] of Object.entries(attrs)) n.setAttribute(k,v);p.appendChild(n);return n}
+function text(parent,attrs,content){const t=make('text',attrs,parent);t.textContent=content;return t}
+function axialToPixel(q,r){return [S*(SQRT3*(q+r/2)), S*(1.5*r)]}
+function rot([x,y]){return [y,-x]}
+const CENTERS_RAW=Object.fromEntries(Object.entries(AX).map(([k,[q,r]])=>[k,axialToPixel(q,r)]));
+const CENTERS=Object.fromEntries(Object.entries(CENTERS_RAW).map(([k,p])=>[k,rot(p)]));
+function verts(k){const [cx0,cy0]=CENTERS_RAW[k];const pts=[];const a0=Math.PI/6;for(let i=0;i<6;i++){const a=a0+i*Math.PI/3;const px=cx0+S*Math.cos(a),py=cy0+S*Math.sin(a);const [xr,yr]=rot([px,py]);pts.push([xr,yr])}return pts}
+const VERTS=new Proxy({}, {get:(o,k)=>k in o?o[k]:o[k]=verts(k)});
+function sharedEdge(u,v){const Pu=VERTS[u], Cv=CENTERS[v];let bi=0,bd=1e9;for(let i=0;i<6;i++){const a=Pu[i],b=Pu[(i+1)%6];const mx=(a[0]+b[0])/2,my=(a[1]+b[1])/2;const d=(mx-Cv[0])**2+(my-Cv[1])**2;if(d<bd){bd=d;bi=i}}return [Pu[bi],Pu[(bi+1)%6]]}
+
+function clear(){while(svg.firstChild) svg.removeChild(svg.firstChild)}
+
+const NEIGHBORS={
+  A:['B','C','D','E','F','G'],
+  B:['A','C','G'],
+  C:['A','B','D'],
+  D:['A','C','E'],
+  E:['A','D','F'],
+  F:['A','E','G'],
+  G:['A','F','B']
+};
+
+function perimeterSegments(active){
+  const segs=[];
+  function hasActiveNbrTile(k,d){
+    const qr=AX[k]; const [dq,dr]=DIRS[d]; const nq=qr[0]+dq, nr=qr[1]+dr;
+    for(const kk of active){const [Q,R]=AX[kk]; if(Q===nq&&R===nr) return true}
+    return false;
+  }
+  for(const k of RING_ORDER){
+    if(!active.has(k)) continue;
+    const V=VERTS[k];
+    for(let d=0; d<6; d++){
+      if(!hasActiveNbrTile(k,d)){
+        const e=(5 - d + 6) % 6;
+        const a=V[e], b=V[(e+1)%6];
+        segs.push([a,b]);
+      }
+    }
+  }
+  return segs;
+}
+
+function removedSet(view){
+  const gone=new Set();
+  const tiles=['A','B','C','D','E','F','G'];
+  for(const t of tiles){
+    const nbrs=NEIGHBORS[t];
+    let allCrashed=true;
+    for(const n of nbrs){
+      const ek=eKey(t,n);
+      const e=view.edges[ek];
+      if(!e || !e.crashed){ allCrashed=false; break; }
+    }
+    if(allCrashed) gone.add(t);
+  }
+  return gone;
+}
+
+// *** NEW: ring label mapping only ***
+const LABEL_MAP={A:'A',B:'G',C:'B',D:'C',E:'D',F:'E',G:'F'};
+
+function render(view, banner="Pass & Play", previewFor=null){
+  clear();
+  text(svg,{x:-17.2,y:-16.8,fill:'#7aa2ff','font-size':1.0,'font-weight':'700'},banner);
+  const gone=removedSet(view);
+  const active=new Set(['A','B','C','D','E','F','G'].filter(k=>!gone.has(k)));
+
+  // Tiles
+  for(const k of active){const pts=VERTS[k].map(p=>p.join(',')).join(' '); make('polygon',{points:pts,fill:Cc.tile})}
+
+  // Planets + labels + counters
+  const rPlanet=0.62*S, iconScale=0.78*rPlanet, fontLetter=0.40*S, fontPx=0.28*iconScale, letterY=0.46*rPlanet;
+  for(const k of active){
+    const [cx,cy]=CENTERS[k]; const t=view.tiles[k];
+    const ownerColor=(t.owner===1?Cc.p1:(t.owner===2?Cc.p2:Cc.ink));
+    if(k!=='A') make('circle',{cx,cy,r:rPlanet,fill:'none',stroke:Cc.ring,'stroke-width':'0.10'});
+    const disp = LABEL_MAP[k] || k;  // display-only mapping
+    text(svg,{x:cx,y:cy-letterY,fill:ownerColor,'text-anchor':'middle','dominant-baseline':'middle','font-size':fontLetter,'font-weight':'800'},disp);
+    function pair(kind,val){
+      const g=make('g'); const t=text(g,{x:0,y:0,fill:Cc.ink,'font-size':fontPx,'font-family':'ui-monospace, Menlo, Consolas, monospace','dominant-baseline':'middle'},String(val));
+      const bb=t.getBBox(); const gap=0.14*iconScale; const iconW=(kind==='tri'?0.32:0.28)*iconScale; const iconH=iconW; const total=iconW+gap+bb.width;
+      function build(x,y){ if(kind==='tri'){const h=iconH; make('path',{d:`M ${x},${y+h/2} L ${x+iconW/2},${y-h/2} L ${x+iconW},${y+h/2} Z`,fill:Cc.ink},g);} else {make('rect',{x:x,y:y-iconH/2,width:iconW,height:iconH,fill:Cc.ink},g);} t.setAttribute('x', x+iconW+gap); t.setAttribute('y', y); }
+      return {node:g,width:total,build};
+    }
+    const ships = (t.ships1||0)+(t.ships2||0);
+    const left=pair('tri',ships), right=pair('sq',t.res||0);
+    const sep=0.18*iconScale, total=left.width+sep+right.width, x0=cx-total/2, y0=cy;
+    left.build(x0,y0); right.build(x0+left.width+sep,y0);
+  }
+
+  // Edges BEFORE gates
+  const edgeAttrs={'stroke':Cc.edge,'stroke-width':'0.24','stroke-linecap':'butt','stroke-linejoin':'round',fill:'none'};
+  const gShared=make('g', edgeAttrs), gPerim=make('g', edgeAttrs);
+  for(const [u,v] of EDGES){
+    if(!active.has(u) || !active.has(v)) continue;
+    const [a,b]=sharedEdge(u,v); make('line',{x1:a[0],y1:a[1],x2:b[0],y2:b[1]},gShared);
+  }
+  for(const [a,b] of perimeterSegments(active)){ make('line',{x1:a[0],y1:a[1],x2:b[0],y2:b[1]},gPerim)}
+
+  // Gates ON TOP
+  const dotR = 0.16*0.78*rPlanet;
+  const chevArm = dotR, chevThick = dotR*0.55, xSize = dotR, xThick = dotR*0.60, chevSpacing = dotR*2.4;
+  function drawChevrons(u,v,mx,my,towardsV,count){
+    const C1=CENTERS[u], C2=CENTERS[v];
+    const vx=C2[0]-C1[0], vy=C2[1]-C1[1], L=Math.hypot(vx,vy), ux=vx/L, uy=vy/L;
+    const dir=towardsV?1:-1, px=-uy, py=ux; const start=-(count-1)/2;
+    for(let i=0;i<count;i++){
+      const cx=mx+(start+i)*chevSpacing*px, cy=my+(start+i)*chevSpacing*py;
+      const tipx=cx+dir*ux*chevArm, tipy=cy+dir*uy*chevArm;
+      const lx=cx-dir*ux*chevArm + px*chevArm*0.70, ly=cy-dir*uy*chevArm + py*chevArm*0.70;
+      const rx=cx-dir*ux*chevArm - px*chevArm*0.70, ry=cy-dir*uy*chevArm - py*chevArm*0.70;
+      make('line',{x1:lx,y1:ly,x2:tipx,y2:tipy,stroke:Cc.ink,'stroke-width':chevThick,'stroke-linecap':'butt'});
+      make('line',{x1:rx,y1:ry,x2:tipx,y2:tipy,stroke:Cc.ink,'stroke-width':chevThick,'stroke-linecap':'butt'});
+    }
+  }
+  for(const [u,v] of EDGES){
+    if(!active.has(u) || !active.has(v)) continue;
+    const [a,b]=sharedEdge(u,v); const mx=(a[0]+b[0])/2, my=(a[1]+b[1])/2;
+    const E=view.edges[eKey(u,v)]||{charge:0,towards:null,crashed:false};
+    if(E.crashed){
+      make('line',{x1:mx-xSize,y1:my-xSize,x2:mx+xSize,y2:my+xSize,stroke:Cc.crash,'stroke-width':xThick});
+      make('line',{x1:mx-xSize,y1:my+xSize,x2:mx+xSize,y2:my-xSize,stroke:Cc.crash,'stroke-width':xThick});
+    } else if(!E.towards||E.charge===0){
+      make('circle',{cx:mx,cy:my,r:dotR,fill:Cc.ink});
+    } else {
+      const count=Math.min(3,Math.abs(E.charge)), towardsV=(E.towards===v);
+      drawChevrons(u,v,mx,my,towardsV,count);
+    }
+  }
+}
+
+// ====== State & Helpers ======
+const initialState=()=>({
+  tiles:{
+    A:{owner:null,ships1:0,ships2:0,res:0},
+    B:{owner:2,ships1:0,ships2:2,res:0},
+    C:{owner:2,ships1:0,ships2:2,res:0},
+    D:{owner:2,ships1:0,ships2:2,res:0},
+    E:{owner:1,ships1:2,ships2:0,res:0},
+    F:{owner:1,ships1:2,ships2:0,res:0},
+    G:{owner:1,ships1:2,ships2:0,res:0}
+  },
+  edges:Object.fromEntries(EDGES.map(([u,v])=>[eKey(u,v),{charge:0,towards:null,crashed:false}])),
+  turn:1,
+  phase:'alloc',
+  planner:1,
+  orders:{1:[],2:[]}
+});
+let state=initialState();
+let gameOver=false;
+
+function planetsControlled(player){
+  return ['B','C','D','E','F','G'].filter(k=>state.tiles[k].owner===player);
+}
+function toast(msg){const t=document.getElementById('toast'); t.textContent=msg; t.classList.remove('hidden'); setTimeout(()=>t.classList.add('hidden'),1800)}
+
+// ====== Allocation ======
+function startAllocation(){
+  state.phase='alloc'; state.planner=1;
+  document.getElementById('phaseLabel').textContent='Allocation';
+  document.getElementById('turnNo').textContent=state.turn;
+  document.getElementById('allocPanel').classList.remove('hidden');
+  document.getElementById('planPanel').classList.add('hidden');
+  document.getElementById('revealPanel').classList.add('hidden');
+  document.getElementById('combatPanel').classList.add('hidden');
+  document.getElementById('buildPanel').classList.add('hidden');
+  document.getElementById('victoryPanel').classList.add('hidden');
+  document.getElementById('saveLoadPanel').classList.add('hidden');
+
+  for(const k of ['B','C','D','E','F','G']){
+    const o=state.tiles[k].owner;
+    if(o){ state.tiles[k].res += 1; }
+  }
+  const allocDiv=document.getElementById('allocGates'); allocDiv.innerHTML='';
+  function bothOwnedBy(player,u,v){ return state.tiles[u].owner===player && state.tiles[v].owner===player; }
+  const gatesByPlayer={1:[],2:[]};
+  for(const [u,v] of EDGES_RING){
+    const e=state.edges[eKey(u,v)];
+    if(e.crashed) continue;
+    if(bothOwnedBy(1,u,v)) gatesByPlayer[1].push([u,v]);
+    if(bothOwnedBy(2,u,v)) gatesByPlayer[2].push([u,v]);
+  }
+  function addSelector(player,uv){
+    const row=document.createElement('div'); row.className='row';
+    row.innerHTML=`<span class='badge'>P${player}</span> +1 for ${uv[0]}–${uv[1]} → 
+      <label><input type="radio" name="g_${player}_${uv[0]}_${uv[1]}" value="${uv[0]}" checked> ${uv[0]}</label>
+      <label><input type="radio" name="g_${player}_${uv[0]}_${uv[1]}" value="${uv[1]}"> ${uv[1]}</label>`;
+    allocDiv.appendChild(row);
+  }
+  if(gatesByPlayer[1].length===0 && gatesByPlayer[2].length===0){
+    const r=document.createElement('div'); r.className='small'; r.textContent='No controlled ring gates to assign.'; allocDiv.appendChild(r);
+  }else{
+    for(const uv of gatesByPlayer[1]) addSelector(1,uv);
+    for(const uv of gatesByPlayer[2]) addSelector(2,uv);
+  }
+  render(state,'Allocation');
+}
+function applyAllocation(){
+  const inputs=[...document.querySelectorAll('#allocGates input[type=radio]:checked')];
+  for(const inp of inputs){
+    const dest=inp.value;
+    state.tiles[dest].res += 1;
+  }
+  state.phase='plan';
+  state.orders={1:[],2:[]};
+  state.planner=1;
+  document.getElementById('allocPanel').classList.add('hidden');
+  document.getElementById('planPanel').classList.remove('hidden');
+  document.getElementById('currentPlayerBadge').textContent='P1 (Red)';
+  refreshPlanSelectors();
+  render(previewStateFor(1),'Planning — P1', 1);
+}
+document.getElementById('allocApply').addEventListener('click',applyAllocation);
+
+// ====== Planning ======
+function currentPlayer(){ return state.planner; }
+function previewStateFor(pid){
+  const clone=JSON.parse(JSON.stringify(state));
+  for(const o of state.orders[pid]){
+    const haveShips = pid===1?clone.tiles[o.from].ships1:clone.tiles[o.from].ships2;
+    const haveRes = clone.tiles[o.from].res;
+    const s = Math.max(0, Math.min(o.ships, haveShips));
+    const r = Math.max(0, Math.min(o.res, clone.tiles[o.from].owner===pid?haveRes:0));
+    if(pid===1) clone.tiles[o.from].ships1 -= s; else clone.tiles[o.from].ships2 -= s;
+    clone.tiles[o.from].res -= r;
+    if(pid===1) clone.tiles[o.to].ships1 += s; else clone.tiles[o.to].ships2 += s;
+    clone.tiles[o.to].res += r;
+  }
+  return clone;
+}
+function refreshPlanSelectors(){
+  const fromSel=document.getElementById('fromTile');
+  const toSel=document.getElementById('toTile');
+  fromSel.innerHTML=''; toSel.innerHTML='';
+  const pid=currentPlayer();
+  const candidates=['A','B','C','D','E','F','G'].filter(k=> (pid===1?state.tiles[k].ships1:state.tiles[k].ships2)>0 || state.tiles[k].owner===pid);
+  for(const k of candidates){
+    const t=previewStateFor(pid).tiles[k];
+    const ships=(pid===1?t.ships1:t.ships2), res=t.res; 
+    const opt=document.createElement('option'); opt.value=k; opt.textContent=`${k} (▲${ships} ■${res})`; fromSel.appendChild(opt);
+  }
+  updateToOptions();
+  drawMyOrders();
+}
+function updateToOptions(){
+  const from=document.getElementById('fromTile').value;
+  const toSel=document.getElementById('toTile'); toSel.innerHTML='';
+  if(!from) return;
+  for(const n of NEIGHBORS[from]){ const opt=document.createElement('option'); opt.value=n; opt.textContent=n; toSel.appendChild(opt); }
+}
+document.getElementById('fromTile').addEventListener('change',updateToOptions);
+
+function availableAt(pid, tile){
+  const t=previewStateFor(pid).tiles[tile];
+  return {ships:(pid===1?t.ships1:t.ships2), res:t.res, owner:state.tiles[tile].owner};
+}
+
+function addOrder(){
+  const pid=currentPlayer();
+  const from=document.getElementById('fromTile').value;
+  const to=document.getElementById('toTile').value;
+  const s=parseInt(document.getElementById('qtyShips').value||'0',10);
+  const r=parseInt(document.getElementById('qtyRes').value||'0',10);
+  if(!from||!to||NEIGHBORS[from].indexOf(to)<0){ toast('Choose adjacent tiles'); return; }
+  if(s<0||r<0){ toast('Quantities must be ≥0'); return; }
+  const avail=availableAt(pid, from);
+  if(s>avail.ships){ toast(`You only have ▲${avail.ships} available at ${from}`); return; }
+  if(r>0 && avail.owner!==pid){ toast('Only the owner may move resources from this tile'); return; }
+  if(r>avail.res){ toast(`You only have ■${avail.res} available at ${from}`); return; }
+  state.orders[pid].push({from,to,ships:s,res:r});
+  drawMyOrders();
+  render(previewStateFor(pid),`Planning — P${pid}`, pid);
+  refreshPlanSelectors();
+}
+function clearOrders(){
+  const pid=currentPlayer();
+  state.orders[pid]=[]; drawMyOrders();
+  render(previewStateFor(pid),`Planning — P${pid}`, pid);
+  refreshPlanSelectors();
+}
+function drawMyOrders(){
+  const pid=currentPlayer();
+  const list=state.orders[pid];
+  const out = (list.length===0) ? '(none)' : list.map(o=>`${o.from}→${o.to} ▲${o.ships} ■${o.res}`).join('; ');
+  document.getElementById('myOrders').textContent = out;
+}
+document.getElementById('addOrder').addEventListener('click',addOrder);
+document.getElementById('clearOrders').addEventListener('click',clearOrders);
+document.getElementById('donePlanner').addEventListener('click',()=>{
+  if(state.planner===1){
+    state.planner=2;
+    document.getElementById('currentPlayerBadge').textContent='P2 (Blue)';
+    render(previewStateFor(2),'Planning — P2',2);
+    refreshPlanSelectors();
+  }else{
+    showReveal();
+  }
+});
+
+// ====== Reveal & Conflict Preview ======
+function showReveal(){
+  state.phase='reveal';
+  document.getElementById('planPanel').classList.add('hidden');
+  document.getElementById('revealPanel').classList.remove('hidden');
+
+  const mk=(list)=> list.length? list.map(o=>`${o.from}→${o.to} ▲${o.ships} ■${o.res}`).join('; ') : '(none)';
+  document.getElementById('ordersP1').textContent = mk(state.orders[1]);
+  document.getElementById('ordersP2').textContent = mk(state.orders[2]);
+
+  const lines=[];
+  const dirMap={};
+  for(const pid of [1,2]) for(const o of state.orders[pid]){
+    const k=eKey(o.from,o.to), towards=o.to;
+    (dirMap[k]||(dirMap[k]={}));
+    (dirMap[k][towards]||(dirMap[k][towards]={p1:0,p2:0}));
+    dirMap[k][towards][pid===1?'p1':'p2'] += o.ships;
+  }
+  for(const key in dirMap){
+    const dirs=Object.keys(dirMap[key]);
+    if(dirs.length===2){
+      const [a,b]=dirs; const A=dirMap[key][a], B=dirMap[key][b];
+      if((A.p1+A.p2)>0 && (B.p1+B.p2)>0) lines.push(`Head‑on clash at ${key}: ${a} ⇄ ${b} (P1 ${A.p1}+${B.p1} vs P2 ${A.p2}+${B.p2} ships)`);
+    }
+  }
+  const incoming={};
+  for(const pid of [1,2]) for(const o of state.orders[pid]){
+    incoming[o.to]=(incoming[o.to]||{p1:0,p2:0});
+    incoming[o.to][pid===1?'p1':'p2'] += o.ships;
+  }
+  for(const k of ['A','B','C','D','E','F','G']){
+    const inc=incoming[k]||{p1:0,p2:0};
+    const def1=state.tiles[k].ships1, def2=state.tiles[k].ships2;
+    if( (inc.p1>0 || inc.p2>0) && ( (inc.p1>0&&inc.p2>0) || (inc.p1>0&&def2>0) || (inc.p2>0&&def1>0) ) ){
+      lines.push(`Combat likely at ${k}: arrivals P1 ${inc.p1}, P2 ${inc.p2}; defenders P1 ${def1}, P2 ${def2}`);
+    }
+  }
+  document.getElementById('conflictPreview').textContent = lines.length? lines.join('\n') : '(none)';
+  render(state,'Reveal');
+}
+document.getElementById('resolveBtn').addEventListener('click',()=>resolveAll());
+
+// ====== Dice & Combat ======
+function roll(){ return 1+Math.floor(Math.random()*6); }
+function resolvePairingCombatDetailed(aShips,bShips){
+  let A=aShips, B=bShips, round=1;
+  let log=[];
+  while(A>0 && B>0){
+    const pairs=Math.min(A,B);
+    let aWins=0, bWins=0, ties=0;
+    let line=`Round ${round}:`;
+    for(let i=0;i<pairs;i++){
+      const da=roll(), db=roll();
+      if(da>db){ aWins++; line+=` [${da}>${db}]`; }
+      else if(db>da){ bWins++; line+=` [${da}<${db}]`; }
+      else { ties++; line+=` [${da}=${db}]`; }
+    }
+    A = A - bWins;
+    B = B - aWins;
+    log.push(line+` → survivors: P1 ${A}, P2 ${B}${ties?` (ties persist)`:''}`);
+    round++;
+  }
+  return {A,B,log};
+}
+
+// ====== Movement + Combat Resolution ======
+function attemptGateCross(key, towards, amount){
+  const g=state.edges[key];
+  if(g.crashed) return {ok:false, crash:true};
+  let signed = 0;
+  if(g.charge!==0 && g.towards){
+    signed = (g.towards===towards)? g.charge : -g.charge;
+  }
+  const next = signed + amount;
+  if(Math.abs(next)>3){
+    g.crashed=true; g.charge=0; g.towards=null;
+    return {ok:false, crash:true};
+  }else{
+    if(next===0){ g.charge=0; g.towards=null; }
+    else { g.charge=Math.abs(next); g.towards = next>0 ? towards : otherEndOfKey(key,towards); }
+    return {ok:true, crash:false};
+  }
+}
+function otherEndOfKey(key, one){ const [a,b]=key.split('-'); return a===one?b:a; }
+
+function resolveAll(){
+  document.getElementById('revealPanel').classList.add('hidden');
+  document.getElementById('combatPanel').classList.remove('hidden');
+  const clog=[];
+
+  const dirMap={};
+  for(const pid of [1,2]) for(const o of state.orders[pid]){
+    const k=eKey(o.from,o.to), towards=o.to;
+    (dirMap[k]||(dirMap[k]={}));
+    (dirMap[k][towards]||(dirMap[k][towards]={1:{ships:0,res:0},2:{ships:0,res:0}}));
+    dirMap[k][towards][pid].ships += o.ships;
+    dirMap[k][towards][pid].res += o.res;
+  }
+
+  const survivorsByDir={};
+  for(const key in dirMap){
+    const dirs=Object.keys(dirMap[key]);
+    if(dirs.length===2){
+      const [tA,tB]=dirs;
+      const a=dirMap[key][tA], b=dirMap[key][tB];
+      const aShips = a[1].ships + a[2].ships;
+      const bShips = b[1].ships + b[2].ships;
+      if(aShips>0 && bShips>0){
+        const res=resolvePairingCombatDetailed(aShips,bShips);
+        clog.push(`Head‑on at ${key} (${tA} ⇄ ${tB}) — start: P1 ${aShips}, P2 ${bShips}`);
+        clog.push(...res.log);
+        const wayWin = res.A>0 && res.B===0 ? tA : (res.B>0 && res.A===0 ? tB : null);
+        survivorsByDir[key]={};
+        if(wayWin===tA){
+          survivorsByDir[key][tA]={p1Ships:a[1].ships, p2Ships:a[2].ships, p1Res:a[1].res, p2Res:a[2].res};
+          survivorsByDir[key][tB]={p1Ships:0,p2Ships:0,p1Res:0,p2Res:0};
+        }else if(wayWin===tB){
+          survivorsByDir[key][tA]={p1Ships:0,p2Ships:0,p1Res:0,p2Res:0};
+          survivorsByDir[key][tB]={p1Ships:b[1].ships, p2Ships:b[2].ships, p1Res:b[1].res, p2Res:b[2].res};
+        }else{
+          survivorsByDir[key][tA]={p1Ships:0,p2Ships:0,p1Res:0,p2Res:0};
+          survivorsByDir[key][tB]={p1Ships:0,p2Ships:0,p1Res:0,p2Res:0};
+        }
+      }
+    }
+  }
+
+  const planned = {1:[],2:[]};
+  for(const pid of [1,2]) for(const o of state.orders[pid]) planned[pid].push({...o});
+  const incomingShips={};
+  function addIncoming(to, ships){ incomingShips[to]=(incomingShips[to]||0)+ships; }
+  for(const pid of [1,2]) for(const o of planned[pid]){
+    const key=eKey(o.from,o.to), towards=o.to;
+    if(survivorsByDir[key] && survivorsByDir[key][towards]){
+      const sv=survivorsByDir[key][towards];
+      const ships = pid===1?sv.p1Ships:sv.p2Ships;
+      if(ships>0) addIncoming(o.to, ships);
+    }else{
+      if(o.ships>0) addIncoming(o.to, o.ships);
+    }
+  }
+  for(const pid of [1,2]){
+    const byFrom={};
+    for(const o of planned[pid]) (byFrom[o.from]=(byFrom[o.from]||[])).push(o);
+    for(const from in byFrom){
+      let avail = pid===1?state.tiles[from].ships1:state.tiles[from].ships2;
+      const enemyIncoming = (incomingShips[from]||0);
+      const defenders = Math.min(avail, enemyIncoming);
+      avail -= defenders;
+      for(const o of byFrom[from]){
+        const take = Math.min(o.ships, Math.max(0, avail));
+        o.ships = take;
+        avail -= take;
+      }
+    }
+  }
+
+  function doCross(pid, o){
+    const key=eKey(o.from,o.to), towards=o.to;
+    let ships=o.ships, res=o.res;
+    if(survivorsByDir[key] && survivorsByDir[key][towards]){
+      const sv=survivorsByDir[key][towards];
+      ships = pid===1?sv.p1Ships:sv.p2Ships;
+      res   = pid===1?sv.p1Res  :sv.p2Res;
+    }
+    const haveShips = pid===1?state.tiles[o.from].ships1:state.tiles[o.from].ships2;
+    ships = Math.min(ships, haveShips);
+    res = Math.min(res, state.tiles[o.from].res);
+    if(pid===1) state.tiles[o.from].ships1 -= ships; else state.tiles[o.from].ships2 -= ships;
+    state.tiles[o.from].res -= res;
+    if(state.tiles[o.from].res<0) state.tiles[o.from].res=0;
+    const amount = ships + res;
+    if(amount>0){
+      const r = attemptGateCross(key, towards, amount);
+      if(r.ok){
+        if(pid===1) state.tiles[o.to].ships1 += ships; else state.tiles[o.to].ships2 += ships;
+        state.tiles[o.to].res += res;
+      }else{
+        clog.push(`Gate crash at ${key} while moving ${amount} unit(s). Crossing units destroyed.`);
+      }
+    }
+  }
+  for(const pid of [1,2]) for(const o of planned[pid]) doCross(pid,o);
+
+  for(const k of ['A','B','C','D','E','F','G']){
+    let s1=state.tiles[k].ships1, s2=state.tiles[k].ships2;
+    if(s1>0 && s2>0){
+      const res=resolvePairingCombatDetailed(s1,s2);
+      clog.push(`Combat at ${k} — start: P1 ${s1}, P2 ${s2}`);
+      clog.push(...res.log);
+      state.tiles[k].ships1 = res.A;
+      state.tiles[k].ships2 = res.B;
+    }
+    if(state.tiles[k].ships1>0 && state.tiles[k].ships2===0) state.tiles[k].owner=1;
+    else if(state.tiles[k].ships2>0 && state.tiles[k].ships1===0) state.tiles[k].owner=2;
+  }
+
+  document.getElementById('combatLog').textContent = clog.join('\n') || '(no battles)';
+  render(state,'After Combat');
+
+  checkVictory();
+  if(gameOver){
+    document.getElementById('combatPanel').classList.add('hidden');
+    render(state,'Game Over');
+    return;
+  }
+}
+document.getElementById('continueToBuild').addEventListener('click',()=>{
+  state.phase='build';
+  document.getElementById('combatPanel').classList.add('hidden');
+  document.getElementById('buildPanel').classList.remove('hidden');
+  buildUI();
+  render(state,'Construction');
+});
+
+// ====== Construction ======
+function buildUI(){
+  const row=document.getElementById('buildRows'); row.innerHTML='';
+  // IMPORTANT: A is excluded from building entirely
+  for(const k of ['B','C','D','E','F','G']){
+    const t=state.tiles[k];
+    if(!t.owner) continue;
+    const max = Math.floor((t.res||0)/3);
+    const div=document.createElement('div'); div.className='row';
+    div.innerHTML = `<span class="badge">${k} (owner P${t.owner}) — Res ${t.res} → Build <input type="number" min="0" max="${max}" value="0" style="width:70px" id="b_${k}"> ships`;
+    row.appendChild(div);
+  }
+}
+function endTurn(){
+  // IMPORTANT: A excluded here as well
+  for(const k of ['B','C','D','E','F','G']){
+    const t=state.tiles[k];
+    if(!t.owner) continue;
+    const inp=document.getElementById('b_'+k);
+    if(!inp) continue;
+    let build=parseInt(inp.value||'0',10);
+    build=Math.max(0, Math.min(build, Math.floor((t.res||0)/3)));
+    t.res -= build*3;
+    if(t.owner===1) t.ships1 += build; else t.ships2 += build;
+  }
+  checkVictory();
+  if(gameOver){ render(state,'Game Over'); return; }
+  state.turn += 1;
+  state.orders={1:[],2:[]};
+  document.getElementById('buildPanel').classList.add('hidden');
+  startAllocation();
+  render(state,'Allocation');
+}
+document.getElementById('endTurn').addEventListener('click',endTurn);
+
+// ====== Victory ======
+function checkVictory(){
+  const p1 = planetsControlled(1).length;
+  const p2 = planetsControlled(2).length;
+  if(p1===0 && p2===0){
+    gameOver=true;
+    document.getElementById('victoryText').textContent='Draw — both players lost their last planets';
+  } else if(p1===0){
+    gameOver=true;
+    document.getElementById('victoryText').textContent='Player 2 (Blue) WINS — last player controlling a planet';
+  } else if(p2===0){
+    gameOver=true;
+    document.getElementById('victoryText').textContent='Player 1 (Red) WINS — last player controlling a planet';
+  }
+  if(gameOver){
+    document.getElementById('victoryPanel').classList.remove('hidden');
+    document.getElementById('allocPanel').classList.add('hidden');
+    document.getElementById('planPanel').classList.add('hidden');
+    document.getElementById('revealPanel').classList.add('hidden');
+    document.getElementById('combatPanel').classList.add('hidden');
+    document.getElementById('buildPanel').classList.add('hidden');
+    document.getElementById('saveLoadPanel').classList.remove('hidden');
+  }
+}
+
+// ====== Save / Load ======
+const SAVE_KEY='gatecrash_v2';
+document.getElementById('saveBtn').addEventListener('click',()=>{
+  try{
+    localStorage.setItem(SAVE_KEY, JSON.stringify(state));
+    document.getElementById('saveLoadPanel').classList.remove('hidden');
+    document.getElementById('saveText').value = JSON.stringify(state);
+    toast('Saved to localStorage and textarea.');
+  }catch(e){ toast('Save failed (localStorage disabled?)'); }
+});
+document.getElementById('loadBtn').addEventListener('click',()=>{
+  document.getElementById('saveLoadPanel').classList.remove('hidden');
+  const txt = localStorage.getItem(SAVE_KEY);
+  if(txt){
+    try{ state=JSON.parse(txt); gameOver=false; toast('Loaded from localStorage'); }
+    catch(e){ toast('Parse failed'); }
+    state.orders=state.orders||{1:[],2:[]};
+    state.phase=state.phase||'alloc';
+    state.planner=state.planner||1;
+    render(state,'Loaded');
+  }else{
+    toast('No save found in localStorage.');
+  }
+});
+document.getElementById('copySave').addEventListener('click',async()=>{
+  try{
+    await navigator.clipboard.writeText(JSON.stringify(state));
+    toast('Copied current state to clipboard');
+  }catch(e){
+    toast('Clipboard not available; use textarea');
+  }
+});
+document.getElementById('pasteLoad').addEventListener('click',()=>{
+  const txt=document.getElementById('saveText').value.trim();
+  if(!txt){ toast('Textarea is empty'); return; }
+  try{
+    state=JSON.parse(txt);
+    gameOver=false;
+    state.orders=state.orders||{1:[],2:[]};
+    state.phase=state.phase||'alloc';
+    state.planner=state.planner||1;
+    render(state,'Loaded from Text');
+    toast('Loaded from textarea');
+  }catch(e){ toast('Invalid JSON'); }
+});
+
+// ====== Init ======
+document.getElementById('newGame').addEventListener('click',()=>{ state=initialState(); gameOver=false; startAllocation(); render(state,'Allocation'); });
+startAllocation();
+render(state,'Allocation');
+</script>
+</body>
+</html>
